@@ -254,77 +254,92 @@ sudo ./aws/install
 
 ---
 
-### Plugin-Based Tool Provisioning — What Installs What?
+## Understanding Jenkins Plugins vs Server Installs
 
-| Tool | Plugin | Installs the Binary? | Still Need Server Install? | Pipeline Step |
-|------|--------|---------------------|---------------------------|---------------|
-| Docker | **Docker Pipeline** + **Docker** | ❌ No (DSL only) | ✅ Yes (needs Docker daemon) | `docker.build()`, `docker.withRegistry()` |
-| kubectl | **Kubernetes CLI** | ✅ Yes | ❌ No | `withKubeConfig([credentialsId: 'kubeconfig'])` |
-| AWS CLI | **Pipeline: AWS Steps** | ❌ No (creds only) | ✅ Yes (needs `aws` binary) | `withAWS(credentials: 'aws-creds')` |
-| Node.js | **NodeJS** | ✅ Yes | ❌ No | `tools { nodejs 'NodeJS-18' }` |
-| Git | Built-in | ❌ No | ✅ Yes | `checkout scm` |
+One of the most common questions when setting up Jenkins is: "Can I just install a plugin and use the tool, or do I need to install it on the server too?" This section explains exactly what each plugin provides and what still requires a manual server installation.
+
+### The Key Concept
+
+Jenkins plugins fall into two categories:
+
+1. **Plugins that install the tool for you** — These download and manage the binary automatically. You configure them in **Manage Jenkins → Tools** and reference them in your pipeline. No server-side installation needed.
+
+2. **Plugins that only provide pipeline DSL or credential injection** — These give you convenient pipeline syntax (like `docker.build()` or `withAWS()`), but they expect the actual tool binary to already exist on the server.
+
+Understanding this difference saves hours of debugging "command not found" errors.
 
 ---
 
-### Docker Plugin — Does It Install Docker?
+### Tutorial: NodeJS Plugin (Installs Node.js Automatically)
 
-**No.** The Docker Pipeline plugin does **NOT** install Docker. It provides pipeline DSL (`docker.build()`, `docker.withRegistry()`, `agent { docker {} }`) but requires the Docker daemon to be running on the Jenkins server or agent.
+The **NodeJS** plugin downloads and manages Node.js versions for you. You never need to install Node.js on the Jenkins server.
 
-You still need Docker installed on the server:
+**Step 1:** Install the plugin
+- Go to **Manage Jenkins → Plugins → Available plugins**
+- Search for "NodeJS" and install it
 
-```bash
-sudo dnf install docker -y
-sudo systemctl start docker && sudo systemctl enable docker
-sudo usermod -aG docker jenkins
-sudo systemctl restart jenkins
-```
+**Step 2:** Configure a Node.js installation
+- Go to **Manage Jenkins → Tools**
+- Scroll to **NodeJS installations**
+- Click **Add NodeJS**
+- Name: `NodeJS-18`
+- Check "Install automatically"
+- Select version: `18.x`
+- Click **Save**
 
-Once Docker is on the server, the plugin gives you these pipeline steps:
+**Step 3:** Use in your pipeline
 
 ```groovy
-// Build and push using plugin DSL (no shell docker commands needed)
-stage('Docker Build & Push') {
-    steps {
-        script {
-            docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-creds') {
-                def app = docker.build("${DOCKER_REPO}:${IMAGE_TAG}")
-                app.push()
+pipeline {
+    agent any
+    tools {
+        nodejs 'NodeJS-18'   // Jenkins auto-installs Node.js 18 for this job
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh 'node --version'   // Works without server install
+                sh 'npm ci'
+                sh 'npm run build'
             }
         }
     }
 }
 ```
 
-```groovy
-// Use a Docker container as the build agent
-pipeline {
-    agent {
-        docker { image 'node:18' }
-    }
-    stages {
-        stage('Build') {
-            steps { sh 'npm ci && npm run build' }
-        }
-    }
-}
-```
+**How it works:** When the pipeline runs, Jenkins checks if Node.js 18 is already downloaded. If not, it downloads it to the Jenkins tools directory and adds it to the PATH for that job. Each job gets an isolated tool installation.
 
 ---
 
-### Kubernetes CLI Plugin — Does It Install kubectl?
+### Tutorial: Kubernetes CLI Plugin (Installs kubectl Automatically)
 
-**Yes!** The **Kubernetes CLI** plugin installs kubectl for you. You do **NOT** need to install kubectl on the server.
+The **Kubernetes CLI** plugin provides the `kubectl` binary AND the `withKubeConfig` pipeline step. You do NOT need to install kubectl on the server.
 
-**Setup:**
+**Step 1:** Install the plugin
+- Go to **Manage Jenkins → Plugins → Available plugins**
+- Search for "Kubernetes CLI" and install it
 
-1. Install the **Kubernetes CLI** plugin from **Manage Jenkins → Plugins**
-2. Add your kubeconfig as a credential (Kind: **Secret file**, ID: `kubeconfig`)
-3. Use in pipeline:
+**Step 2:** Add your kubeconfig as a credential
+- Go to **Manage Jenkins → Credentials → System → Global credentials**
+- Click **Add Credentials**
+- Kind: **Secret file**
+- File: Upload your `~/.kube/config`
+- ID: `kubeconfig`
+- Click **Create**
+
+> To generate the kubeconfig locally:
+> ```bash
+> aws eks update-kubeconfig --name landmark-eks --region us-east-1
+> cat ~/.kube/config
+> ```
+
+**Step 3:** Use in your pipeline
 
 ```groovy
-stage('Deploy') {
+stage('Deploy to Kubernetes') {
     steps {
         withKubeConfig([credentialsId: 'kubeconfig']) {
+            sh 'kubectl get nodes'              // kubectl is available automatically
             sh 'kubectl apply -f k8s/namespace.yml'
             sh 'kubectl apply -f k8s/'
         }
@@ -332,52 +347,103 @@ stage('Deploy') {
 }
 ```
 
-**Alternative — generate kubeconfig dynamically with AWS:**
+**How it works:** The plugin bundles kubectl and makes it available inside the `withKubeConfig` block. It also sets up the `KUBECONFIG` environment variable pointing to your uploaded kubeconfig file, so kubectl knows which cluster to talk to.
 
-If you don't want to store a static kubeconfig file, generate it at runtime (requires AWS CLI on server):
+**Alternative — Dynamic kubeconfig (no static file):**
+
+If you prefer not to store a kubeconfig file (since EKS tokens expire), you can generate it at runtime using AWS CLI + the Kubernetes CLI plugin:
 
 ```groovy
 stage('Deploy') {
     steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
             sh 'aws eks update-kubeconfig --name landmark-eks --region us-east-1'
-            withKubeConfig([credentialsId: 'kubeconfig']) {
-                sh 'kubectl apply -f k8s/'
+            sh 'kubectl apply -f k8s/'   // kubectl provided by the plugin
+        }
+    }
+}
+```
+
+This approach requires AWS CLI on the server (see below) but avoids storing a static kubeconfig.
+
+---
+
+### Tutorial: Docker Pipeline Plugin (Does NOT Install Docker)
+
+The **Docker Pipeline** plugin provides a clean Groovy DSL for building, pushing, and running Docker containers in your pipeline. However, it does **NOT** install Docker itself. The Docker daemon must already be running on the Jenkins server or agent.
+
+**Why?** Docker is not just a CLI tool — it's a daemon (background service) that manages containers, images, networks, and volumes. A plugin cannot install and run a system daemon. It can only provide a nice API on top of an existing Docker installation.
+
+**Step 1:** Install Docker on the Jenkins server
+
+```bash
+# Install Docker
+sudo dnf install docker -y
+
+# Start and enable the daemon
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Allow Jenkins user to run Docker commands
+sudo usermod -aG docker jenkins
+
+# Restart Jenkins to pick up the group change
+sudo systemctl restart jenkins
+```
+
+**Step 2:** Install the plugins
+- Go to **Manage Jenkins → Plugins → Available plugins**
+- Install both **Docker Pipeline** and **Docker** plugins
+
+**Step 3:** Use in your pipeline
+
+```groovy
+// Example 1: Build and push an image to Docker Hub
+stage('Docker Build & Push') {
+    steps {
+        script {
+            // docker.withRegistry handles login/logout automatically
+            // 'dockerhub-creds' is a Username+Password credential you created earlier
+            docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-creds') {
+                def app = docker.build("chafah/landmark-web-app:${IMAGE_TAG}")
+                app.push()           // Pushes the tag
+                app.push('latest')   // Also push as 'latest'
             }
         }
     }
 }
 ```
 
-Or simply (since `aws eks update-kubeconfig` writes to `~/.kube/config`):
-
 ```groovy
-stage('Deploy') {
-    steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-            sh 'aws eks update-kubeconfig --name landmark-eks --region us-east-1'
-            sh 'kubectl apply -f k8s/'
+// Example 2: Run your build inside a Docker container (no Node.js needed on server)
+pipeline {
+    agent {
+        docker {
+            image 'node:18'
+            args '-v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh 'npm ci && npm run build'
+            }
         }
     }
 }
 ```
 
+**How it works:** Behind the scenes, `docker.build()` runs `docker build`, `docker.withRegistry()` runs `docker login` and `docker logout`, and `agent { docker {} }` runs `docker run` to spin up a container for your build. The plugin translates your Groovy code into Docker CLI commands — but the Docker CLI and daemon must exist.
+
 ---
 
-### AWS CLI — Plugin Options
+### Tutorial: Pipeline AWS Steps Plugin (Does NOT Install AWS CLI)
 
-#### Option A: Pipeline AWS Steps Plugin (Credential Injection Only)
+The **Pipeline: AWS Steps** plugin provides `withAWS()` which injects AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`) as environment variables into your pipeline. It does **NOT** provide the `aws` command.
 
-The **Pipeline: AWS Steps** plugin provides `withAWS()` which injects `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` into the environment. It does **NOT** install the `aws` CLI binary.
+**Why?** The AWS CLI is a Python-based tool with many dependencies. The plugin focuses on securely injecting credentials rather than managing a complex tool installation.
 
-```groovy
-// This injects credentials but 'aws' command must exist on the server
-withAWS(credentials: 'aws-creds', region: 'us-east-1') {
-    sh 'aws eks update-kubeconfig --name landmark-eks'
-}
-```
-
-#### Option B: Install AWS CLI on the Server (Recommended)
+**Step 1:** Install AWS CLI on the server
 
 ```bash
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -386,31 +452,69 @@ sudo ./aws/install
 aws --version
 ```
 
+**Step 2:** Install the plugins
+- Install **Pipeline: AWS Steps** and **AWS Credentials** plugins
+
+**Step 3:** Add AWS credentials
+- Go to **Manage Jenkins → Credentials → Add Credentials**
+- Kind: **AWS Credentials**
+- ID: `aws-creds`
+- Fill in Access Key ID and Secret Access Key
+
+**Step 4:** Use in your pipeline
+
+```groovy
+stage('Deploy') {
+    steps {
+        // withAWS sets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION
+        // but the 'aws' command must already be installed on the server
+        withAWS(credentials: 'aws-creds', region: 'us-east-1') {
+            sh 'aws eks update-kubeconfig --name landmark-eks --region us-east-1'
+            sh 'kubectl apply -f k8s/'
+        }
+    }
+}
+```
+
+**How it works:** `withAWS()` reads the credentials from Jenkins credential store and exports them as environment variables for the duration of that block. Any `sh` commands inside the block can use `aws` CLI, and it will automatically authenticate using those injected credentials. When the block ends, the credentials are removed from the environment.
+
 ---
 
-### Summary: Minimum Server Installs
+### Summary Table
 
-For this project's pipeline, you need these on the Jenkins server:
+| Tool | Plugin | Installs Binary? | Server Install Needed? | Pipeline Step |
+|------|--------|:----------------:|:---------------------:|---------------|
+| Node.js | **NodeJS** | ✅ Yes | ❌ No | `tools { nodejs 'NodeJS-18' }` |
+| kubectl | **Kubernetes CLI** | ✅ Yes | ❌ No | `withKubeConfig([credentialsId: '...'])` |
+| Docker | **Docker Pipeline** | ❌ No | ✅ Yes (daemon) | `docker.build()`, `docker.withRegistry()` |
+| AWS CLI | **Pipeline: AWS Steps** | ❌ No | ✅ Yes (binary) | `withAWS(credentials: '...')` |
+| Git | Built-in | ❌ No | ✅ Yes | `checkout scm` |
+
+---
+
+### Minimum Server Installation for This Project
+
+Based on the table above, here's what you need to install on the Jenkins server:
 
 ```bash
-# 1. Git
+# 1. Git — required for checking out code
 sudo dnf install git -y
 
-# 2. Docker
+# 2. Docker — required because the plugin only provides DSL, not the daemon
 sudo dnf install docker -y
 sudo systemctl start docker && sudo systemctl enable docker
 sudo usermod -aG docker jenkins
 sudo systemctl restart jenkins
 
-# 3. AWS CLI
+# 3. AWS CLI — required because the plugin only injects credentials
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
 ```
 
-**Provided by plugins (no server install needed):**
-- Node.js → **NodeJS** plugin
-- kubectl → **Kubernetes CLI** plugin
+**You do NOT need to install:**
+- Node.js — the **NodeJS** plugin handles it
+- kubectl — the **Kubernetes CLI** plugin handles it
 
 ---
 

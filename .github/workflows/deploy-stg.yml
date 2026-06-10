@@ -46,8 +46,8 @@ jobs:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
         run: |
-          docker build -t $ECR_REGISTRY/alicenakeli/landmark-web-app:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/alicenakeli/landmark-web-app:$IMAGE_TAG
+          docker build -t $ECR_REGISTRY/landmark-web-app:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/landmark-web-app:$IMAGE_TAG
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name landmark-eks --region us-east-1
@@ -57,6 +57,8 @@ jobs:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
         run: |
+          sed -i 's/name: landmark/name: staging/g' k8s/namespace.yml
           sed -i 's/namespace: landmark/namespace: staging/g' k8s/*.yml
-          sed -i "s|image: landmark-technologies:latest|image: $ECR_REGISTRY/alicenakeli/landmark-web-app:$IMAGE_TAG|g" k8s/app-deployment.yml
+          sed -i "s|image: landmark-technologies:latest|image: $ECR_REGISTRY/landmark-web-app:$IMAGE_TAG|g" k8s/app-deployment.yml
+          kubectl apply -f k8s/namespace.yml
           kubectl apply -f k8s/

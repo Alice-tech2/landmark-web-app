@@ -39,4 +39,4 @@ jobs:
           echo "IMAGE_TAG=${BRANCH}-${TIMESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Docker build (validate)
-        run: docker build -t chafah/landmark-web-app:${{ steps.tag.outputs.IMAGE_TAG }} .
+        run: docker build -t alicenakeli/landmark-web-app:${{ steps.tag.outputs.IMAGE_TAG }} .

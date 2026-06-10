@@ -4,7 +4,7 @@ pipeline {
         nodejs 'NodeJS-18'
     }
     environment {
-        DOCKER_REPO = 'chafah/landmark-web-app'
+        DOCKER_REPO = 'alicenakeli/landmark-web-app'
         AWS_REGION = 'us-east-1'
         EKS_CLUSTER = 'landmark-eks'
     }

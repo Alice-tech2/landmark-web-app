@@ -39,7 +39,6 @@ pipeline {
                     branch pattern: 'release*', comparator: 'GLOB'
                     branch 'main'
                     branch pattern: 'hotfix*', comparator: 'GLOB'
-                    // Allow regular pipeline jobs (BRANCH_NAME is null)
                     expression { return env.BRANCH_NAME == null }
                 }
             }
@@ -66,7 +65,11 @@ pipeline {
                         sed -i "s|image: landmark-technologies:latest|image: ${ECR_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}|g" k8s/app-deployment.yml
                         kubectl apply -f k8s/namespace.yml
                         kubectl apply -f k8s/
-                    """ {
+                    """
+                }
+            }
+        }
+        stage('Deploy to Staging') {
             when { branch pattern: 'release*', comparator: 'GLOB' }
             steps {
                 withAWS(credentials: 'aws-creds', region: "${AWS_REGION}") {
@@ -77,7 +80,11 @@ pipeline {
                         sed -i "s|image: landmark-technologies:latest|image: ${ECR_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}|g" k8s/app-deployment.yml
                         kubectl apply -f k8s/namespace.yml
                         kubectl apply -f k8s/
-                    """ {
+                    """
+                }
+            }
+        }
+        stage('Deploy to Production') {
             when {
                 anyOf {
                     branch 'main'

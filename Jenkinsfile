@@ -1,7 +1,7 @@
 pipeline {
     agent any
     tools {
-        nodejs 'NodeJS-18'
+        nodejs 'nodejs-18'
     }
     environment {
         DOCKER_REPO = 'landmark-web-app'
